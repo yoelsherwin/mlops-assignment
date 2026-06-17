@@ -11,4 +11,5 @@ exec uv run python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" \
     --host 0.0.0.0 \
     --port 8000 \
-    --max-model-len 8192
+    --max-model-len 8192 \
+    --speculative-config '{"method":"ngram","num_speculative_tokens":4,"prompt_lookup_max":4}'
