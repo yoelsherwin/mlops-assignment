@@ -9,8 +9,10 @@ agent's final SQL, the result rows, and per-iteration history.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -29,7 +31,21 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY
     _lf_handler = CallbackHandler()
 
 
-app = FastAPI()
+# The anyio default thread limiter caps concurrent sync FastAPI handlers at 40
+# tokens per process. Iter 1 hit this exactly (vLLM `running` plateaued at ~40)
+# and was fixed via `uvicorn --workers 4` (4 × 40 = 160 slots). At 160 slots
+# KV cache peaked at 62 %, leaving headroom; 240 should push KV to ~93 %
+# (still under the ~95 % preemption threshold) while lifting achieved RPS.
+_THREAD_POOL_SIZE = 240
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    anyio.to_thread.current_default_thread_limiter().total_tokens = _THREAD_POOL_SIZE
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 class AnswerRequest(BaseModel):

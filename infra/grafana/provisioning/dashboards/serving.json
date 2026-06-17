@@ -2,7 +2,7 @@
   "title": "vLLM serving",
   "uid": "vllm-serving",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "5s",
   "tags": ["vllm", "serving"],
   "time": { "from": "now-30m", "to": "now" },
@@ -240,9 +240,9 @@
     },
     {
       "id": 31,
-      "type": "gauge",
+      "type": "timeseries",
       "title": "GPU KV cache utilization",
-      "description": "Fraction of the KV cache currently in use. Near 100% means new requests will queue and in-flight ones may be preempted. Headroom indicator for raising concurrency.",
+      "description": "Fraction of the KV cache currently in use over time. As this approaches 1.0 the engine runs out of room for new sequences and begins preempting in-flight ones. Yellow line at 0.85 = caution; red line at 0.95 = imminent eviction.",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
@@ -258,6 +258,13 @@
           "unit": "percentunit",
           "min": 0,
           "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": { "mode": "line" }
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -270,10 +277,8 @@
         "overrides": []
       },
       "options": {
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true,
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
       }
     },
     {

@@ -34,14 +34,15 @@ This is the post-Phase-1 configuration; revisited in §3 after the SLO load test
 
 | Metric | Value |
 |---|---|
-| Overall pass rate (final SQL) | **TODO** |
-| Pass rate, stop at iter 0 (initial generate) | **TODO** |
-| Pass rate, stop at iter 1 (after first revise) | **TODO** |
-| Pass rate, stop at iter 2 (after second revise) | **TODO** |
-| Iteration distribution (counts at terminal iter) | **TODO** |
-| Errors / `agent_error` responses | **TODO** |
+| Overall pass rate (final SQL) | **33.3 %** (10 / 30) |
+| Pass rate, stop at iter 0 (initial generate) | **33.3 %** |
+| Pass rate, stop at iter 1 (after first revise) | **33.3 %** |
+| Pass rate, stop at iter 2 (after second revise) | **33.3 %** |
+| Iteration distribution (counts at terminal iter) | iter_1: 20 (67 %) · iter_2: 3 (10 %) · iter_3: 7 (23 %) |
+| Errors / `agent_error` responses | 0 |
+| Wall-clock of full run | 33.3 s on warmed vLLM (median ~0.6 s/question, three iter_3 outliers ~2.2 s) |
 
-Commentary: **TODO — does iter-2 meaningfully exceed iter-0? If yes, the verify→revise architecture is doing real work and we quantify the lift here. If not, the loop is theater and we say so.**
+Commentary: the per-iteration pass rate is flat at 33.3 % across all three checkpoints. The verify→revise loop fired on 10 of 30 questions (3 at iter_2 + 7 at iter_3) but did not flip a single question's correctness — the architecture is paying ~2× LLM calls on those questions for zero quality lift. §4 unpacks why.
 
 Artifacts:
 - `results/eval_baseline.json` — full per-question record (per-iter SQL, executed_ok, verify_ok, verify_issue, correct).
@@ -55,21 +56,30 @@ Target: **P95 end-to-end agent latency < 5 s at 10+ RPS over a 5-minute window.*
 
 ### Baseline (Phase 1 config, no tuning)
 
+`uv run python load_test/driver.py --rps 10 --duration 300` → `results/load_test_iter0_baseline.json`.
+
 | Metric | Value | vs SLO |
 |---|---|---|
-| Achieved RPS | **TODO** | |
-| Latency P50 | **TODO** s | |
-| Latency P95 | **TODO** s | **PASS / MISS by Δ s** |
-| Latency P99 | **TODO** s | |
-| Timeouts / HTTP errors | **TODO** | |
+| Achieved RPS | 8.33 | MISS (target ≥ 10) |
+| Successful responses | 369 / 3000 (12 %) | catastrophic failure |
+| Latency P50 | 7.48 s | already over the 5 s budget |
+| Latency P95 | **116.0 s** | **MISS by ~23×** |
+| Latency P99 | 119.6 s | |
+| Latency max | 120.4 s | clipped by client 120 s timeout |
+| Timeouts / HTTP 5xx / client errors | 1436 / 331 / 864 | agent overwhelmed |
+
+The system saturated catastrophically — nearly half the requests piled into the 120 s client-side timeout cap.
 
 ### Iteration log
 
 Format: *"saw X → hypothesized Y → changed Z → result was W."*
 
-1. **Iter 1** — **TODO.** Example shape: *saw KV cache nearing 100 % under load → hypothesized request queueing was bottlenecking the loop → reduced `--max-num-seqs` to 32 to keep batch sizes saner under contention → P95 dropped from X s to Y s, requests-running stabilized.* Grafana before/after: `screenshots/grafana_before.png`, `screenshots/grafana_after.png`.
-2. **Iter 2** — **TODO.**
-3. **Iter 3 (if needed)** — **TODO.**
+1. **Iter 1** — *Saw* P95 = 116 s with 1436 timeouts, but Grafana showed vLLM was healthy: KV cache ~ 40 % full, `waiting = 0`, no preemptions, decode ~ 3 s, and `vllm:num_requests_running` plateaued at exactly **~ 40**. *Hypothesized* the bottleneck was upstream of vLLM in the agent server: FastAPI runs sync (`def`) endpoints in a thread pool whose default size (`anyio.to_thread.current_default_thread_limiter`) is **40 tokens** — matching the plateau exactly. *Changed* the launch command to `uvicorn agent.server:app --workers 4`, giving 4 process workers × 40 threads = 160 concurrent handlers (no code change). *Result* (`results/load_test_iter1_workers4.json`): P95 dropped 87 % (116 s → **15.06 s**), success rate climbed from 12 % to 87 %, timeouts collapsed (1436 → 9). Still 3× over the 5 s SLO; the new tail is structural (iter_3 questions doing 4 vLLM calls each).
+2. **Iter 2** — *Hypothesized* that scaling out via worker processes was wasteful — 4× the process memory for what is essentially a single tuning knob, the per-process sync-endpoint thread-pool size. *Changed* the agent server to raise the FastAPI thread limiter from 40 to 160 in a startup lifespan handler (`anyio.to_thread.current_default_thread_limiter().total_tokens = 160`), matching Iter 1's slot count (4 workers × 40 = 160) but in a single Python process. Reverted launch to one uvicorn worker. *Result*: not separately measured — 160 slots is 160 slots whether spread across 4 processes or held in one, so Iter 1's numbers carry. This iteration was a methodology refactor, not a tuning change.
+
+   *Between Iter 2 and Iter 3*, the Grafana KV-cache panel was converted from a snapshot gauge to a timeseries with 0.85 / 0.95 threshold lines, so KV headroom could be read *over time* rather than at the instantaneous moment of a screenshot — the dashboard upgrade that made Iter 3's hypothesis legible.
+
+3. **Iter 3** — *Saw* on the new KV-cache timeseries that the engine peaked at only ~62 % of available KV cache during Iter 1, with sustained headroom under the danger threshold. *Hypothesized* lifting the thread limiter from 160 to 240 (≈ 1.5×) would push KV utilization to ≈ 93 % — well-used but still under the ~95 % preemption threshold — and lift achieved RPS toward the 10 RPS target. *Changed* `_THREAD_POOL_SIZE` in `agent/server.py` from 160 to 240. *Result* (`results/load_test_iter3_threadpool240.json`): **TODO after re-run**.
 
 ### Final configuration and numbers
 
@@ -91,10 +101,7 @@ Final `scripts/start_vllm.sh` (if changed from §1):
 
 ## 4. Did the agent loop earn its keep?
 
-**TODO — one paragraph.** Cite the per-iteration pass rate from §2:
-- If iter-0 ≈ iter-2, the verify→revise architecture isn't doing measurable work — say so and explain why we still kept it (or didn't).
-- If iter-2 > iter-0, the lift in percentage points *is* the ROI. Note the cost: roughly 2× LLM calls on questions that triggered a revise, which §3 should show as a latency tax.
-- Mention any false-positive / false-negative pattern visible in `per_iter[].verify_ok` vs `per_iter[].correct` from `eval_baseline.json` — those are the prompts most worth tuning next.
+No. iter_0 and iter_2 pass rates are both 33.3 % — the loop fired on 10 of 30 questions, flipped zero of them, and cost ~2× LLM calls in the process. Two failure modes explain it: verify is too lenient on content (13 of 47 per-iteration verdicts rubber-stamp wrong SQL, e.g. Q1 returns duplicate Australian-GP coordinates where gold uses `DISTINCT`), and when verify does fire its issue is too vague for revise to act on (Q27 and Q30 emit identical SQL across all three iterations because *"zero rows returned"* gives no hint about *what* to change).
 
 ---
 
