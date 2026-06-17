@@ -9,6 +9,7 @@ dependencies = [
     # Agent (major-version bounded; uv.lock pins exactly)
     "langgraph>=1.0,<2.0",
     "langchain>=1.0,<2.0",
+    "transformers>=4.48.0,<5.0.0",
     "langchain-openai>=1.0,<2.0",
     "langfuse>=4.0,<5.0",
     # Server wrapper
