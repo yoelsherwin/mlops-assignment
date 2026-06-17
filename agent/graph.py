@@ -30,8 +30,11 @@ from agent.execution import ExecutionResult, execute_sql
 from agent.schema import render_schema
 
 # Total generate + revise calls before the loop is forced to stop.
-# 3-5 is a reasonable range; tune it as part of Phase 3.
-MAX_ITERATIONS = 3
+# Iter 5 of Phase 6: lowered from 3 to 2 to cut the structural P95 tail
+# (iter_3 questions were doing 4 sequential vLLM calls each, blowing past the
+# 5 s SLO). §2 / §4 of REPORT.md showed iter_2 pass rate = iter_0 pass rate,
+# so this latency win comes with no accuracy cost.
+MAX_ITERATIONS = 2
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
