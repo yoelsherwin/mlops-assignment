@@ -71,8 +71,9 @@ def llm() -> ChatOpenAI:
 # ---- Nodes ------------------------------------------------------------
 
 def _attach_schema(state: AgentState) -> dict:
-    """Provided. Render the DB schema once at the start of the run."""
-    return {"schema": render_schema(state.db_id)}
+    """Render the DB schema once at the start of the run, pruned to tables
+    relevant to the question (Phase 6 / Iter 10 — see agent/schema.py)."""
+    return {"schema": render_schema(state.db_id, question=state.question)}
 
 
 def _extract_sql(text: str) -> str:
