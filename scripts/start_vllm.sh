@@ -14,4 +14,4 @@ exec uv run python -m vllm.entrypoints.openai.api_server \
     --max-model-len 8192 \
     --max-num-seqs 32 \
     --disable-log-requests \
-    --speculative-config '{"method":"ngram","num_speculative_tokens":4,"prompt_lookup_max":4}'
+    --speculative-config '{"method":"ngram","num_speculative_tokens":6,"prompt_lookup_max":8}'
