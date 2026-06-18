@@ -30,11 +30,8 @@ from agent.execution import ExecutionResult, execute_sql
 from agent.schema import render_schema
 
 # Total generate + revise calls before the loop is forced to stop.
-# Iter 5 of Phase 6: lowered from 3 to 2 to cut the structural P95 tail
-# (iter_3 questions were doing 4 sequential vLLM calls each, blowing past the
-# 5 s SLO). §2 / §4 of REPORT.md showed iter_2 pass rate = iter_0 pass rate,
-# so this latency win comes with no accuracy cost.
-MAX_ITERATIONS = 2
+# 3-5 is a reasonable range; tune it as part of Phase 3.
+MAX_ITERATIONS = 3
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
@@ -71,9 +68,8 @@ def llm() -> ChatOpenAI:
 # ---- Nodes ------------------------------------------------------------
 
 def _attach_schema(state: AgentState) -> dict:
-    """Render the DB schema once at the start of the run, pruned to tables
-    relevant to the question (Phase 6 / Iter 10 — see agent/schema.py)."""
-    return {"schema": render_schema(state.db_id, question=state.question)}
+    """Provided. Render the DB schema once at the start of the run."""
+    return {"schema": render_schema(state.db_id)}
 
 
 def _extract_sql(text: str) -> str:
