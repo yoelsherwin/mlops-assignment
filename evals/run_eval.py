@@ -28,7 +28,7 @@ AGENT_URL_DEFAULT = "http://localhost:8001/answer"
 
 # Must match agent.graph.MAX_ITERATIONS. Inlined to avoid pulling the
 # langchain/langgraph dependencies into the eval runner.
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 2
 
 
 # ---------- Helpers (provided) -----------------------------------------

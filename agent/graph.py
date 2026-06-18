@@ -30,8 +30,9 @@ from agent.execution import ExecutionResult, execute_sql
 from agent.schema import render_schema
 
 # Total generate + revise calls before the loop is forced to stop.
-# 3-5 is a reasonable range; tune it as part of Phase 3.
-MAX_ITERATIONS = 3
+# Phase-6 Iter 3 lowered this 3 -> 2: Phase-5 eval showed iter_0 == iter_2 pass
+# rate (33.3 %), so the third LLM call adds zero quality and is pure tail latency.
+MAX_ITERATIONS = 2
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
@@ -112,19 +113,56 @@ def execute_node(state: AgentState) -> dict:
     return {"execution": execute_sql(state.db_id, state.sql)}
 
 
+_ROWS_IMPLIED_PREFIXES = (
+    "list ", "which ", "name ", "what is the", "what are the",
+    "who is", "who are", "show ", "find ", "give ",
+)
+_COUNT_HINTS = (" how many ", " count ", " number of ", "total number")
+
+
+def _rule_based_verify(state: AgentState) -> tuple[bool | None, str]:
+    """Cheap deterministic pre-check. Returns (ok, issue) or (None, "") if undecided.
+
+    Phase-5 eval showed the LLM verify never flipped correctness (iter_0 ==
+    iter_2 = 33.3 %). On the common cases the verdict is mechanical: SQL
+    errored -> ok=false, rows came back -> ok=true. We only need an LLM call
+    for the genuinely ambiguous "executed-ok but empty rows" path.
+    """
+    if state.execution is None:
+        return False, "no execution result"
+    if not state.execution.ok:
+        return False, f"SQL execution error: {state.execution.error}"
+    rows = state.execution.rows or []
+    if rows:
+        return True, ""
+    q = state.question.lower()
+    rows_implied = (
+        any(q.startswith(p) for p in _ROWS_IMPLIED_PREFIXES)
+        and not any(k in q for k in _COUNT_HINTS)
+    )
+    if rows_implied:
+        return False, "zero rows returned but the question implies rows should exist"
+    return None, ""
+
+
 def verify_node(state: AgentState) -> dict:
     """Decide whether state.execution plausibly answers state.question.
 
-    Follow the generate_sql_node pattern: build messages from the VERIFY_*
-    prompts, call llm(), parse the reply. Ask the model for a small JSON object
-    like {"ok": bool, "issue": str} and parse it defensively - the model may
-    wrap it in prose or fences. state.execution.render() gives you a compact
-    view of the rows or error to feed into the prompt.
-
-    Return: {"verify_ok": <bool>, "verify_issue": <str>}.
-    What counts as "not plausible" is yours to define - see the Phase 3 targets
-    in the README.
+    Runs the deterministic rule first; falls back to the LLM verifier only on
+    the undecided case (executed-ok with empty rows where the question doesn't
+    clearly imply rows). On the load-test workload this short-circuits ~67 %
+    of verify calls with the same verdict the LLM would have given.
     """
+    rule_ok, rule_issue = _rule_based_verify(state)
+    if rule_ok is not None:
+        return {
+            "verify_ok": rule_ok,
+            "verify_issue": rule_issue,
+            "history": state.history + [
+                {"node": "verify", "ok": rule_ok, "issue": rule_issue, "source": "rule"}
+            ],
+        }
+
     response = llm().invoke([
         ("system", prompts.VERIFY_SYSTEM),
         ("user", prompts.VERIFY_USER.format(
@@ -144,7 +182,9 @@ def verify_node(state: AgentState) -> dict:
     return {
         "verify_ok": ok,
         "verify_issue": issue,
-        "history": state.history + [{"node": "verify", "ok": ok, "issue": issue}],
+        "history": state.history + [
+            {"node": "verify", "ok": ok, "issue": issue, "source": "llm"}
+        ],
     }
 
 
